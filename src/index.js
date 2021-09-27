@@ -61,47 +61,126 @@ const findMethod = (args, methods) => {
 
   const primaryMethods = methods.get("primary");
 
-  const item = primaryMethods.find(({ types }) => checkTypes(args, types));
+  const [item] = primaryMethods
+    .map(({ types }, index) => ({ result: checkTypes(args, types), index }))
+    .filter((item) => item.result)
+    .sort((left, right) => left.result - right.result);
 
-  return item && item.func;
+  return item && primaryMethods[item.index].func;
 };
 
 const checkTypes = (args, type) => {
   if (!Array.isArray(args)) {
-    return false;
+    throw new TypeError("Invalid args");
   }
 
   if (!Array.isArray(type)) {
-    return false;
+    throw new TypeError("Invalid type");
   }
 
   if (type.length !== args.length) {
-    return false;
+    throw new TypeError("Invalid length");
   }
 
-  return args.every((value, index) => checkType(value, type[index]));
+  for (const index in args) {
+    const value = args[index];
+
+    const check = checkType(value, type[index]);
+
+    if (check.result) {
+      return check.specific;
+    }
+  }
+
+  return null;
 };
 
 const checkType = (value, { type }) => {
   if (type === universalType) {
-    return true;
+    return { result: true, specific: -Infinity };
   }
 
   if (typeof value === type) {
-    return true;
+    return { result: true, specific: -Infinity };
   }
 
-  return value instanceof global[type];
+  const { result, deps } = checkInstanceOf(value, type).result;
+
+  return {
+    result: !!result,
+    specific: deps,
+  };
 };
 
-const append = defgeneric("append");
-append.defmethod("Array,Array", (a, b) => a.concat(b));
-append.defmethod("*,Array", (a, b) => [a].concat(b));
-append.defmethod("Array,*", (a, b) => a.concat([b]));
+const checkInstanceOf = (value, type, deps = 0) => {
+  if (typeof value !== "object") {
+    return { result: false, deps };
+  }
 
-console.log(append([1, 2], [3, 4]));
-console.log(append(1, [2, 3, 4]));
-console.log(append([1, 2, 3], 4));
-console.log(append(1, 2));
+  if (typeof type !== "string") {
+    return { result: false, deps };
+  }
+
+  if (value == null) {
+    return { result: false, deps };
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+
+  if (prototype == null) {
+    return { result: false, deps };
+  }
+
+  if (prototype.constructor == null) {
+    return { result: false, deps };
+  }
+
+  if (prototype.constructor.name !== type) {
+    return checkInstanceOf(prototype, type, deps + 1);
+  }
+
+  return { result: true, deps };
+};
+
+try {
+  const append = defgeneric("append");
+  append.defmethod("Array,Array", (a, b) => a.concat(b));
+  append.defmethod("*,Array", (a, b) => [a].concat(b));
+  append.defmethod("Array,*", (a, b) => a.concat([b]));
+
+  console.log(append([1, 2], [3, 4]));
+  console.log(append(1, [2, 3, 4]));
+  console.log(append([1, 2, 3], 4));
+  console.log(append(1, 2));
+} catch (e) {
+  console.error(1, e);
+}
+
+try {
+  function Mammal() {}
+
+  function Rhino() {}
+
+  Rhino.prototype = new Mammal();
+  Rhino.prototype.constructor = Rhino;
+
+  function Platypus() {}
+
+  Platypus.prototype = new Mammal();
+  Platypus.prototype.constructor = Platypus;
+
+  const name = defgeneric("name")
+    .defmethod("Mammal", function () {
+      return "Mammy";
+    })
+    .defmethod("Platypus", function (p) {
+      return "Platty "; //+ callNextMethod(this, p);
+    });
+
+  console.log(name(new Rhino()));
+  console.log(name(new Platypus()));
+} catch (e) {
+  console.error(2, e);
+}
 
 debugger;
