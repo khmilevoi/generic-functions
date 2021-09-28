@@ -9,13 +9,24 @@ const defgeneric = (name) => {
   };
 
   const call = function (...args) {
-    const method = findMethod(args, methods);
+    const { before, primary, after } = findMethod(args, methods);
+
+    const [method, ...next] = primary;
+
+    const context = {
+      name,
+      next: next || [],
+    };
 
     if (method == null) {
-      return new TypeError("Unknown Type");
+      throw new TypeError("Unknown Type");
     }
 
-    return method(...args);
+    before.forEach((f) => f.bind(context)(...args));
+    const res = method.bind(context)(...args);
+    after.forEach((f) => f.bind(context)(...args));
+
+    return res;
   };
 
   call.defmethod = (types, func, type = "primary") => {
@@ -25,12 +36,70 @@ const defgeneric = (name) => {
   };
 
   call.findMethod = (...args) => {
-    return findMethod(args, methods);
+    return function () {
+      const { before, primary, after } = findMethod(args, methods);
+
+      const [method, ...next] = primary;
+
+      const context = {
+        next,
+      };
+
+      if (method == null) {
+        throw new TypeError("Unknown Type");
+      }
+
+      before.forEach((f) => f.bind(context)(...args));
+      const res = method.bind(context)(...args);
+      after.forEach((f) => f.bind(context)(...args));
+
+      return res;
+    };
+  };
+
+  call.removeMethod = (...args) => {
+    const beforeMethods = methods.get("before") || [];
+
+    const primaryMethods = methods.get("primary") || [];
+
+    const afterMethods = methods.get("after") || [];
+
+    methods.set(
+      "before",
+      beforeMethods.filter(({ types }) => {
+        try {
+          return checkTypes(args, types) == null;
+        } catch (e) {
+          return true;
+        }
+      })
+    );
+    methods.set(
+      "primary",
+      primaryMethods.filter(({ types }) => {
+        try {
+          return checkTypes(args, types) == null;
+        } catch (e) {
+          return true;
+        }
+      })
+    );
+    methods.set(
+      "after",
+      afterMethods.filter(({ types }) => {
+        try {
+          return checkTypes(args, types) == null;
+        } catch (e) {
+          return true;
+        }
+      })
+    );
+
+    return call;
   };
 
   return call;
 };
-
 const parseTypes = (types) => {
   if (typeof types !== "string") {
     throw new TypeError("Invalid Types");
@@ -59,14 +128,32 @@ const findMethod = (args, methods) => {
     throw new TypeError("Invalid methods");
   }
 
-  const primaryMethods = methods.get("primary");
+  const beforeMethods = methods.get("before") || [];
 
-  const [item] = primaryMethods
+  const before = beforeMethods
     .map(({ types }, index) => ({ result: checkTypes(args, types), index }))
-    .filter((item) => item.result)
+    .filter((item) => item.result != null)
     .sort((left, right) => left.result - right.result);
 
-  return item && primaryMethods[item.index].func;
+  const primaryMethods = methods.get("primary") || [];
+
+  const primary = primaryMethods
+    .map(({ types }, index) => ({ result: checkTypes(args, types), index }))
+    .filter((item) => item.result != null)
+    .sort((left, right) => left.result - right.result);
+
+  const afterMethods = methods.get("after") || [];
+
+  const after = afterMethods
+    .map(({ types }, index) => ({ result: checkTypes(args, types), index }))
+    .filter((item) => item.result != null)
+    .sort((left, right) => right.result - left.result);
+
+  return {
+    before: before.map(({ index }) => beforeMethods[index].func),
+    primary: primary.map(({ index }) => primaryMethods[index].func),
+    after: after.map(({ index }) => afterMethods[index].func),
+  };
 };
 
 const checkTypes = (args, type) => {
@@ -82,29 +169,33 @@ const checkTypes = (args, type) => {
     throw new TypeError("Invalid length");
   }
 
+  let res = 0;
+
   for (const index in args) {
     const value = args[index];
 
     const check = checkType(value, type[index]);
 
     if (check.result) {
-      return check.specific;
+      res += check.specific;
+    } else {
+      return null;
     }
   }
 
-  return null;
+  return res;
 };
 
 const checkType = (value, { type }) => {
   if (type === universalType) {
-    return { result: true, specific: -Infinity };
+    return { result: true, specific: Infinity };
   }
 
   if (typeof value === type) {
-    return { result: true, specific: -Infinity };
+    return { result: true, specific: Infinity };
   }
 
-  const { result, deps } = checkInstanceOf(value, type).result;
+  const { result, deps } = checkInstanceOf(value, type);
 
   return {
     result: !!result,
@@ -142,6 +233,20 @@ const checkInstanceOf = (value, type, deps = 0) => {
   return { result: true, deps };
 };
 
+const callNextMethod = (context, ...args) => {
+  const list = context.next || [];
+
+  if (list.length === 0) {
+    throw new Error(
+      `No next method found for ${context.name} in ${JSON.stringify(args)}`
+    );
+  }
+
+  const curr = list.shift();
+
+  return curr && curr(...args);
+};
+
 try {
   const append = defgeneric("append");
   append.defmethod("Array,Array", (a, b) => a.concat(b));
@@ -156,31 +261,95 @@ try {
   console.error(1, e);
 }
 
+function Mammal() {}
+
+function Rhino() {}
+
+Rhino.prototype = new Mammal();
+Rhino.prototype.constructor = Rhino;
+
+function Platypus() {}
+
+Platypus.prototype = new Mammal();
+Platypus.prototype.constructor = Platypus;
+
 try {
-  function Mammal() {}
-
-  function Rhino() {}
-
-  Rhino.prototype = new Mammal();
-  Rhino.prototype.constructor = Rhino;
-
-  function Platypus() {}
-
-  Platypus.prototype = new Mammal();
-  Platypus.prototype.constructor = Platypus;
-
   const name = defgeneric("name")
     .defmethod("Mammal", function () {
       return "Mammy";
     })
     .defmethod("Platypus", function (p) {
-      return "Platty "; //+ callNextMethod(this, p);
+      return "Platty " + callNextMethod(this, p);
     });
 
   console.log(name(new Rhino()));
   console.log(name(new Platypus()));
 } catch (e) {
   console.error(2, e);
+}
+
+try {
+  let msgs = "";
+  const log = function (str) {
+    msgs += str;
+  };
+  const describe = defgeneric("describe")
+    .defmethod("Platypus", function () {
+      log("Platy" + arguments.length.toString());
+      return "P";
+    })
+    .defmethod("Mammal", function () {
+      log("Mammy" + arguments.length.toString());
+      return "M";
+    })
+    .defmethod(
+      "Platypus",
+      function () {
+        log("platypus" + arguments.length.toString());
+      },
+      "before"
+    )
+    .defmethod(
+      "Platypus",
+      function () {
+        log("/platypus" + arguments.length.toString());
+      },
+      "after"
+    )
+    .defmethod(
+      "Mammal",
+      function () {
+        log("mammal" + arguments.length.toString());
+      },
+      "before"
+    )
+    .defmethod(
+      "Mammal",
+      function () {
+        log("/mammal" + arguments.length.toString());
+      },
+      "after"
+    )
+    .defmethod(
+      "object",
+      function () {
+        log("object" + arguments.length.toString());
+      },
+      "before"
+    )
+    .defmethod(
+      "object",
+      function () {
+        log("/object" + arguments.length.toString());
+      },
+      "after"
+    );
+
+  const res = describe(new Platypus());
+
+  console.log(`${res}:${msgs}`);
+} catch (e) {
+  console.error(3, e);
 }
 
 debugger;
