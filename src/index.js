@@ -1,3 +1,5 @@
+// these is peace of shit
+
 const universalType = "*";
 
 const defgeneric = (name) => {
