@@ -9,24 +9,7 @@ const defgeneric = (name) => {
   };
 
   const call = function (...args) {
-    const { before, primary, after } = findMethod(args, methods);
-
-    const [method, ...next] = primary;
-
-    const context = {
-      name,
-      next: next || [],
-    };
-
-    if (method == null) {
-      throw new TypeError("Unknown Type");
-    }
-
-    before.forEach((f) => f.bind(context)(...args));
-    const res = method.bind(context)(...args);
-    after.forEach((f) => f.bind(context)(...args));
-
-    return res;
+    return executeMethod(args, methods, name);
   };
 
   call.defmethod = (types, func, type = "primary") => {
@@ -37,23 +20,7 @@ const defgeneric = (name) => {
 
   call.findMethod = (...args) => {
     return function () {
-      const { before, primary, after } = findMethod(args, methods);
-
-      const [method, ...next] = primary;
-
-      const context = {
-        next,
-      };
-
-      if (method == null) {
-        throw new TypeError("Unknown Type");
-      }
-
-      before.forEach((f) => f.bind(context)(...args));
-      const res = method.bind(context)(...args);
-      after.forEach((f) => f.bind(context)(...args));
-
-      return res;
+      return executeMethod(args, methods, name);
     };
   };
 
@@ -68,27 +35,29 @@ const defgeneric = (name) => {
       "before",
       beforeMethods.filter(({ types }) => {
         try {
-          return checkTypes(args, types) == null;
+          return checkTypes(args, types) != null;
         } catch (e) {
           return true;
         }
       })
     );
+
     methods.set(
       "primary",
       primaryMethods.filter(({ types }) => {
         try {
-          return checkTypes(args, types) == null;
+          return checkTypes(args, types) != null;
         } catch (e) {
           return true;
         }
       })
     );
+
     methods.set(
       "after",
       afterMethods.filter(({ types }) => {
         try {
-          return checkTypes(args, types) == null;
+          return checkTypes(args, types) != null;
         } catch (e) {
           return true;
         }
@@ -117,6 +86,41 @@ const parseType = (type) => {
   }
 
   return { type };
+};
+
+const executeMethod = (args, methods, name) => {
+  const { before, primary, after, around } = findMethod(args, methods);
+
+  const [method, ...next] = primary;
+
+  const context = {
+    next,
+    name,
+  };
+
+  if (method == null && !before.length && !after.length && !around.length) {
+    throw new TypeError("Unknown Type");
+  }
+
+  const create = ([item, ...list]) => {
+    return item.bind({
+      next: list.length ? [create(list)] : [],
+      name,
+    });
+  };
+
+  const f = create([
+    ...around,
+    (...args) => {
+      before.forEach((f) => f.bind(context)(...args));
+      const res = method && method.bind(context)(...args);
+      after.forEach((f) => f.bind(context)(...args));
+
+      return res;
+    },
+  ]);
+
+  return f(...args);
 };
 
 const findMethod = (args, methods) => {
@@ -149,10 +153,18 @@ const findMethod = (args, methods) => {
     .filter((item) => item.result != null)
     .sort((left, right) => right.result - left.result);
 
+  const aroundMethods = methods.get("around") || [];
+
+  const around = aroundMethods
+    .map(({ types }, index) => ({ result: checkTypes(args, types), index }))
+    .filter((item) => item.result != null)
+    .sort((left, right) => left.result - right.result);
+
   return {
     before: before.map(({ index }) => beforeMethods[index].func),
     primary: primary.map(({ index }) => primaryMethods[index].func),
     after: after.map(({ index }) => afterMethods[index].func),
+    around: around.map(({ index }) => aroundMethods[index].func),
   };
 };
 
@@ -352,4 +364,64 @@ try {
   console.error(3, e);
 }
 
-debugger;
+const laysEggs = defgeneric("lays-eggs");
+
+laysEggs
+  .defmethod(
+    "Platypus",
+    function () {
+      console.log("Before platypus egg check.");
+    },
+    "before"
+  )
+  .defmethod(
+    "Mammal",
+    function () {
+      console.log("Before mammal egg check.");
+    },
+    "before"
+  )
+  .defmethod(
+    "*",
+    function () {
+      console.log("Before egg check.");
+    },
+    "before"
+  )
+  .defmethod(
+    "Platypus",
+    function () {
+      console.log("After platypus egg check.");
+    },
+    "after"
+  )
+  .defmethod(
+    "Mammal",
+    function () {
+      console.log("After mammal egg check.");
+    },
+    "after"
+  );
+
+laysEggs.defmethod(
+  "Platypus",
+  function (p) {
+    console.log(">>>Around platypus check.");
+    var ret = callNextMethod(this, p);
+    console.log("<<<Around platypus check.");
+    return ret;
+  },
+  "around"
+);
+laysEggs.defmethod(
+  "Mammal",
+  function (p) {
+    console.log(">>>Around mammal check.");
+    var ret = callNextMethod(this, p);
+    console.log("<<<Around mammal check.");
+    return ret;
+  },
+  "around"
+);
+
+laysEggs(new Platypus());
